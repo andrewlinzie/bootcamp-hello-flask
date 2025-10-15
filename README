@@ -1,0 +1,5 @@
+cat > README.md <<'EOF'
+# Hello Flask (Bootcamp Project)
+
+Minimal Flask app containerized with Docker. Will be deployed to AWS via Terraform + EKS in later steps.
+EOF
