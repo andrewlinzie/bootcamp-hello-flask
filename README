@@ -1,5 +1,309 @@
-cat > README.md <<'EOF'
-# Hello Flask (Bootcamp Project)
+# PHASE 1 — HIGH-LEVEL ROADMAP (EXECUTIVE OVERVIEW)
 
-Minimal Flask app containerized with Docker. Will be deployed to AWS via Terraform + EKS in later steps.
+**Step 1 — Build a tiny Flask app**
+
+* Goal: Have a working “Hello, World!” web app.
+* Core Concept: Minimal web service to prove the pipeline.
+* Success Criteria: `localhost:5000` returns “Hello, World!”. 
+
+**Step 2 — Containerize with Docker & test locally**
+
+* Goal: Package the app so it runs the same everywhere.
+* Core Concept: Docker image + container run.
+* Success Criteria: Container exposes port 5000 and responds. 
+
+**Step 3 — Commit to Git**
+
+* Goal: Version control application + Dockerfile (later IaC/Helm).
+* Core Concept: Reproducibility, collaboration.
+* Success Criteria: Code pushed to your repo’s `main`. 
+
+**Step 4 — Provision AWS infra with Terraform**
+
+* Goal: Create VPC, subnets, routing, security, NAT/IGW, **EKS**, **ECR**, and a **Jenkins EC2**.
+* Core Concept: Declarative IaC; repeatable environments.
+* Success Criteria: `terraform apply` completes; resources visible in AWS Console. 
+
+**Step 5 — Configure kubectl & create Helm chart**
+
+* Goal: Prepare K8s manifests as a Helm chart; connect kubectl to EKS.
+* Core Concept: Package, parameterize, and deploy to Kubernetes.
+* Success Criteria: `helm template` renders; `kubectl get nodes` shows Ready nodes. 
+
+**Step 6 — Stand up Jenkins on EC2 (Docker)**
+
+* Goal: Managed CI/CD runner reachable on port 8080.
+* Core Concept: Jenkins in Docker with required plugins/CLIs.
+* Success Criteria: Jenkins UI reachable; initial admin setup complete. 
+
+**Step 7 — CI/CD pipeline (Jenkinsfile)**
+
+* Goal: Build Docker image → push to ECR → deploy via Helm to EKS.
+* Core Concept: Pipeline automates build/test/deploy.
+* Success Criteria: Green pipeline; new image in ECR; app reachable behind ALB/Ingress. 
+
+**Step 8 — Validate HPA & ALB**
+
+* Goal: Prove autoscaling & public access.
+* Core Concept: HPA at 50% CPU/memory, ALB Internet-facing ingress.
+* Success Criteria: `kubectl get hpa` shows targets; app 200 OK via ALB DNS. 
+
+---
+
+# ⚙️ PHASE 2 — DETAILED WALKTHROUGH (HANDS-ON GUIDE)
+
+> I’ll break each step into **Concept**, **Actions**, **Verify**, **Pitfalls**, **Security/Cost**.
+
+## Step 1 — Build the app
+
+**Concept:** Small Flask service keeps focus on infra + pipeline.
+**Actions:**
+
+```bash
+mkdir App && cd App
+touch app.py requirements.txt
+```
+
+**app.py**
+
+```python
+from flask import Flask
+app = Flask(__name__)
+@app.route("/")
+def hello():
+    return "Hello, World!"
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+```
+
+**requirements.txt**
+
+```
+flask==3.0.0
+gunicorn==21.2.0
+```
+
+**Verify:** `python app.py` → browse [http://localhost:5000](http://localhost:5000) (expect “Hello, World!”).
+**Pitfalls:** Wrong port binding or virtualenv issues.
+**Security/Cost:** Local only—no risks yet. 
+
+## Step 2 — Containerize & test
+
+**Concept:** Docker ensures consistent runtime.
+**Actions:**
+
+```bash
+cat > Dockerfile <<'EOF'
+FROM python:3.8-slim
+WORKDIR /app
+COPY requirements.txt requirements.txt
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["python","app.py"]
 EOF
+
+docker build -t hello-app:latest .
+docker run -d -p 5000:5000 --name flask-test hello-app:latest
+```
+
+**Verify:** Hit `http://localhost:5000`.
+**Pitfalls:** Port mapping `-p host:container` reversed; missing requirements.
+**Security/Cost:** Use slim base to reduce surface area. 
+
+## Step 3 — Commit to Git
+
+**Concept:** Source of truth for app and later IaC/Helm.
+**Actions:**
+
+```bash
+git init
+git add .
+git commit -m "hello world app + Dockerfile"
+git branch -M main
+git remote add origin <YOUR_REPO_URL>
+git push -u origin main
+```
+
+**Verify:** Repo shows files on `main`.
+**Pitfalls:** Don’t commit secrets; add a `.gitignore` for Terraform state later.
+**Security/Cost:** Keep repo private if possible. 
+
+## Step 4 — Provision AWS with Terraform
+
+**Concept:** Create VPC (public/private), IGW, NAT, route tables, NACLs, SGs; **EKS** (v1.31), **node group**, **ALB**, **ECR**, **Jenkins EC2**.
+**Actions (scaffold):**
+
+```
+/Terraform
+  provider.tf  vpc.tf  ec2.tf  ecr.tf  eks.tf  iam.tf  outputs.tf  variables.tf
+/helm-chart
+```
+
+Populate files per your guide (VPC, subnets x2 public/x2 private, NAT x2, routes, SGs for EKS/ALB/Jenkins; ECR repo+policy; EKS cluster+node group with launch template; ALB/TG/Listener; IAM roles+attachments; outputs).
+Initialize & apply:
+
+```bash
+cd Terraform
+terraform init
+terraform plan
+terraform apply -auto-approve
+```
+
+**Verify:** AWS Console shows VPC, subnets, EKS cluster active, node group Ready, ECR repo, and Jenkins EC2 running; `terraform output` prints EKS endpoint and Jenkins IP.
+**Pitfalls:** Wrong region/AMIs, missing IAM attachments, private subnets not routed via NAT, SGs too tight.
+**Security/Cost:** NAT gateways and ALB cost money; consider one NAT in non-prod; restrict SGs (don’t keep `0.0.0.0/0` SSH in real prod). 
+
+## Step 5 — kubectl & Helm
+
+**Concept:** Use `aws eks update-kubeconfig` then create a Helm chart to package app + HPA + Ingress.
+**Actions:**
+
+```bash
+aws eks update-kubeconfig --name <eks-cluster-name> --region <region>
+kubectl get nodes
+mkdir -p helm-chart && cd helm-chart
+helm create hello
+```
+
+Edit `Chart.yaml` and **values.yaml** to reference your **ECR** image, service (port 80 → targetPort 5000), HPA (min 1/max 3; CPU/Mem 50%), and **ALB** ingress annotations/class.
+**Verify:**
+
+```bash
+helm template hello .
+```
+
+renders cleanly.
+**Pitfalls:** Wrong image repo/tag; missing ALB ingress class/annotations.
+**Security/Cost:** Public ALB exposes the app—ensure it’s intended. 
+
+## Step 6 — Jenkins on EC2 (Docker)
+
+**Concept:** Run Jenkins in Docker for a quick CI server.
+**Actions:**
+
+```bash
+chmod 400 ~/.ssh/<KEY>.pem
+ssh -i ~/.ssh/<KEY>.pem ubuntu@<JENKINS_PUBLIC_IP>
+
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+
+docker run -d --name jenkins \
+  -p 8080:8080 -p 50000:50000 \
+  -v jenkins_home:/var/jenkins_home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  jenkins/jenkins:lts
+
+docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+Open `http://<JENKINS_PUBLIC_IP>:8080`, install suggested plugins + **Docker**, **Amazon ECR**, **GitHub**, **Kubernetes CLI**, **AWS Credentials**, **Pipeline**.
+Install CLIs (host or container) for `aws`, `kubectl`, `helm` as needed.
+**Verify:** Jenkins UI reachable; admin configured.
+**Pitfalls:** Forgetting to open 8080 in SG; Docker socket mount missing.
+**Security/Cost:** Limit open ports; consider an ALB or VPN for Jenkins in real deployments. 
+
+## Step 7 — CI/CD pipeline (Jenkinsfile)
+
+**Concept:** Automate build → ECR push → Helm upgrade.
+**Actions (outline):**
+
+1. Create **Jenkinsfile** in repo root with stages:
+
+   * Checkout
+   * Docker build & tag (`$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/<repo>:<git-sha>`)
+   * ECR login & push
+   * Helm upgrade/install to EKS
+2. Configure Jenkins credentials (AWS/ECR, if needed).
+3. Create a Multibranch or Pipeline job pointing to your repo.
+   **Verify:** Pipeline is green; ECR shows new image; `kubectl get deploy,po,ing,svc,hpa` healthy; ALB DNS responds 200.
+   **Pitfalls:** Missing ECR login, wrong repo/tag, kubeconfig not present on Jenkins.
+   **Security/Cost:** Use least-privilege AWS IAM for Jenkins; rotate creds. 
+
+## Step 8 — Validate HPA & ALB
+
+**Concept:** Prove autoscaling and internet access.
+**Actions:**
+
+```bash
+kubectl get hpa
+kubectl describe hpa <name>
+kubectl get ingress
+```
+
+Optionally stress test (e.g., `hey`/`ab`) to push CPU > 50% and observe replicas scale within min/max.
+**Verify:** HPA shows metrics; pods scale; ALB DNS returns the app.
+**Pitfalls:** Metrics server not available (ensure it’s enabled in EKS if required for HPA signals).
+**Security/Cost:** Load tests can create transient cost; watch limits. 
+
+---
+
+# ⚙️ PHASE 3 — VALIDATION MATRIX
+
+| Step        | Validation Command / Check            | Expected Result                             |
+| ----------- | ------------------------------------- | ------------------------------------------- |
+| 1 App       | Open `http://localhost:5000`          | “Hello, World!”                             |
+| 2 Docker    | `docker ps`                           | `flask-test` up, port `5000->5000`          |
+| 3 Git       | Repo view on `main`                   | App & Dockerfile present                    |
+| 4 Terraform | `terraform output`                    | EKS endpoint, Jenkins IP, ECR URL visible   |
+| 5 K8s/Helm  | `kubectl get nodes` / `helm template` | Nodes Ready / chart renders                 |
+| 6 Jenkins   | `http://<ip>:8080`                    | Jenkins UI loads; admin set                 |
+| 7 CI/CD     | Jenkins build log                     | Build → Push ECR → Helm deploy: **SUCCESS** |
+| 8 HPA/ALB   | `kubectl get hpa` / ALB DNS           | HPA shows targets; 200 OK via ALB           |
+
+
+---
+
+# ⚙️ PHASE 4 — DELIVERABLES CHECKLIST
+
+* [ ] **App & Docker**: `app.py`, `requirements.txt`, `Dockerfile`; local container tested. 
+* [ ] **Repo**: Code on `main`, `.gitignore` includes Terraform state. 
+* [ ] **Terraform**: `provider.tf`, `vpc.tf`, `ec2.tf`, `ecr.tf`, `eks.tf`, `iam.tf`, `outputs.tf`, `variables.tf`; `apply` successful. 
+* [ ] **K8s/Helm**: Chart (`hello/`), `values.yaml` with ECR image, service, HPA, ALB ingress. 
+* [ ] **Jenkins**: Running on EC2 via Docker; required plugins installed. 
+* [ ] **Jenkinsfile**: Pipeline builds image → pushes to ECR → deploys via Helm to EKS. 
+* [ ] **Validation Artifacts**:
+
+  * ALB DNS + screenshot of app
+  * `kubectl get all -n <ns>` output
+  * Jenkins successful build log
+  * `kubectl get hpa` output (optional load test evidence)
+
+---
+
+# ⚙️ PHASE 5 — RECAP, NEXT STEPS & TEARDOWN
+
+## Key Takeaways
+
+* **Conceptual:** How IaC (Terraform) cleanly provisions a production-like AWS stack; how Docker → ECR → EKS fits into a modern delivery model; how Helm templates parameterize K8s; why CI/CD is the backbone of repeatable releases. 
+* **Technical:** VPC design (public/private subnets, NAT/IGW, routes/NACL/SGs), EKS cluster + node group wiring, ALB ingress with annotations, HPA at CPU/Mem 50%, Jenkins on EC2 in Docker, pipeline stages from build to deploy. 
+
+## Smart Next Steps
+
+* **Security hardening:** Lock SSH (no `0.0.0.0/0`), use SSM Session Manager; private Jenkins or GitHub Actions/ArgoCD; ECR lifecycle policies. 
+* **Cost optimization:** Reduce NAT gateways in lower envs; right-size nodes; scale to zero where possible. 
+* **Reliability:** Add health checks, probes, and basic observability (CloudWatch Container Insights / Prometheus + Grafana).
+* **DevX:** Parameterize Helm values per env; add preview environments on PRs.
+
+## Teardown (so you don’t get billed)
+
+1. **Helm uninstall** (if you deployed manually before CI/CD):
+
+   ```bash
+   helm uninstall hello
+   ```
+2. **Terraform destroy** (removes EKS, ALB, VPC, ECR, EC2, etc.):
+
+   ```bash
+   cd Terraform
+   terraform destroy
+   ```
+
+   If ECR has images, delete them first (ECR may block repo deletion).
+3. **Jenkins container (if left running):**
+
+   ```bash
+   docker stop jenkins && docker rm jenkins
+   ```
+4. **Sanity checks in AWS Console:** Confirm ALB, NAT, EIPs, ECR repos, and EC2 instances are gone. 
